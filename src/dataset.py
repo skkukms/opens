@@ -113,7 +113,6 @@ class VOCSegDataset(Dataset):
 
     def __getitem__(self, idx):
         img, mask = self.ds[idx]
-        mask = mask.convert("L")
         if self.transform:
             img, mask = self.transform(img, mask)
         return img, mask

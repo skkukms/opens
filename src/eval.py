@@ -21,7 +21,6 @@ import torch
 from PIL import Image
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
-from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,7 +46,7 @@ def infer_image(model, img: Image.Image, orig_h: int, orig_w: int,
                 device, crop_size: int = 512) -> np.ndarray:
     """Return (H, W) uint8 class-index array at original resolution."""
     x = preprocess(img, crop_size).to(device)
-    with autocast():
+    with torch.amp.autocast(device_type=device.type, enabled=device.type == "cuda"):
         logit = model(x)                             # (1, C, crop, crop)
     # upsample to original size
     logit = torch.nn.functional.interpolate(
@@ -74,7 +73,7 @@ def run_val(model, voc_root: str, crop_size: int, batch_size: int,
 
     for imgs, masks in loader:
         imgs = imgs.to(device, non_blocking=True)
-        with autocast():
+        with torch.amp.autocast(device_type=device.type, enabled=device.type == "cuda"):
             logits = model(imgs)
         preds = logits.argmax(dim=1)
         meter.update(preds, masks)

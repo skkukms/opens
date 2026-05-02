@@ -18,7 +18,7 @@ import sys
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 
 import wandb
@@ -55,7 +55,7 @@ def train_one_epoch(model, loader, criterion, optimizer, scheduler,
         masks = masks.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        with autocast(enabled=args.amp):
+        with torch.amp.autocast(device_type=device.type, enabled=args.amp):
             logits = model(imgs)
             loss   = criterion(logits, masks)
 
@@ -83,7 +83,7 @@ def validate(model, loader, device):
     for imgs, masks in loader:
         imgs  = imgs.to(device, non_blocking=True)
         masks = masks.to(device)
-        with autocast():
+        with torch.amp.autocast(device_type=device.type, enabled=False):
             logits = model(imgs)
         preds = logits.argmax(dim=1)
         meter.update(preds, masks)
@@ -179,7 +179,7 @@ def main():
 
     # ---- loss / scaler ----
     criterion = SegLoss(num_classes=args.num_classes)
-    scaler    = GradScaler(enabled=args.amp)
+    scaler    = GradScaler("cuda", enabled=args.amp)
 
     # ---- resume ----
     start_epoch = 0
@@ -202,6 +202,12 @@ def main():
 
     # ---- training loop ----
     best_miou = 0.0
+    if args.resume:
+        try:
+            best_miou = torch.load(args.resume, map_location="cpu").get("mIoU", 0.0)
+            print(f"Restored best mIoU: {best_miou:.4f}")
+        except Exception:
+            pass
 
     for epoch in range(start_epoch, args.epochs):
         avg_loss = train_one_epoch(model, train_loader, criterion, optimizer,
