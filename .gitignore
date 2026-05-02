@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Checkpoints & large files
+checkpoints/*.pth
+checkpoints/*.pt
+
+# Dataset (downloaded locally, not tracked)
+data/
+VOCdevkit/
+
+# Submission images (empty folder tracked, not contents)
+submit/img/*
+submit/pred/*
+
+# Wandb
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
