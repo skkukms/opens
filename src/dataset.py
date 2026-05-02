@@ -105,7 +105,7 @@ class SegTransform:
 class VOCSegDataset(Dataset):
     def __init__(self, root: str, year: str, image_set: str, transform=None):
         self.ds = VOCSegmentation(root=root, year=year, image_set=image_set,
-                                  download=False)
+                                  download=True)
         self.transform = transform
 
     def __len__(self):
