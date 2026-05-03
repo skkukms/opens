@@ -34,11 +34,19 @@ STD  = [0.229, 0.224, 0.225]
 
 
 def preprocess(img: Image.Image, size: int = 512):
-    """Resize (bilinear), to tensor, normalize."""
-    img = TF.resize(img, [size, size], interpolation=InterpolationMode.BILINEAR,
-                    antialias=True)
+    """Resize (preserve aspect ratio, longer side=size), pad to size×size, normalize."""
+    orig_w, orig_h = img.size
+    scale = size / max(orig_h, orig_w)
+    new_h = int(orig_h * scale)
+    new_w = int(orig_w * scale)
+    img = TF.resize(img, [new_h, new_w],
+                    interpolation=InterpolationMode.BILINEAR, antialias=True)
+    pw = size - new_w
+    ph = size - new_h
+    if pw > 0 or ph > 0:
+        img = TF.pad(img, [0, 0, pw, ph], fill=0)
     t = TF.to_tensor(img)
-    return TF.normalize(t, MEAN, STD).unsqueeze(0)   # (1, 3, H, W)
+    return TF.normalize(t, MEAN, STD).unsqueeze(0)   # (1, 3, size, size)
 
 
 @torch.no_grad()
@@ -47,8 +55,15 @@ def infer_image(model, img: Image.Image, orig_h: int, orig_w: int,
     """Return (H, W) uint8 class-index array at original resolution."""
     x = preprocess(img, crop_size).to(device)
     with torch.amp.autocast(device_type=device.type, enabled=device.type == "cuda"):
-        logit = model(x)                             # (1, C, crop, crop)
-    # upsample to original size
+        logit = model(x)                             # (1, C, crop_size, crop_size)
+
+    # Compute the scaled (non-padded) dimensions to crop padding away
+    scale  = crop_size / max(orig_h, orig_w)
+    new_h  = int(orig_h * scale)
+    new_w  = int(orig_w * scale)
+    logit  = logit[:, :, :new_h, :new_w]            # remove pad region
+
+    # Upsample to original size
     logit = torch.nn.functional.interpolate(
         logit, size=(orig_h, orig_w), mode="bilinear", align_corners=False
     )
@@ -135,8 +150,9 @@ def parse_args():
     p.add_argument("--voc-root",   default=None)
     p.add_argument("--img-dir",    default="submit/img")
     p.add_argument("--pred-dir",   default="submit/pred")
-    p.add_argument("--num-classes",type=int, default=21)
-    p.add_argument("--aspp-ch",    type=int, default=128)
+    p.add_argument("--num-classes",  type=int, default=21)
+    p.add_argument("--aspp-ch",      type=int, default=192)
+    p.add_argument("--low-proj-ch",  type=int, default=48)
     p.add_argument("--crop-size",  type=int, default=512)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--workers",    type=int, default=4)
@@ -149,7 +165,7 @@ def main():
     print(f"Device: {device}")
 
     model = SegModel(num_classes=args.num_classes, pretrained=False,
-                     aspp_ch=args.aspp_ch).to(device)
+                     aspp_ch=args.aspp_ch, low_proj_ch=args.low_proj_ch).to(device)
     load_checkpoint(args.ckpt, model)
     model.eval()
 

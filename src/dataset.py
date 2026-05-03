@@ -47,10 +47,11 @@ class SegTransform:
 
     def __call__(self, img: Image.Image, mask: Image.Image):
         if self.train:
-            # --- random scale ---
+            # --- random scale (aspect ratio 유지) ---
             scale = random.uniform(0.5, 2.0)
-            sh = int(self.crop_size * scale)
-            sw = int(self.crop_size * scale)
+            orig_h, orig_w = img.height, img.width
+            sh = int(orig_h * scale)
+            sw = int(orig_w * scale)
             img  = TF.resize(img,  [sh, sw], interpolation=InterpolationMode.BILINEAR,
                              antialias=True)
             mask = TF.resize(mask, [sh, sw], interpolation=InterpolationMode.NEAREST)
@@ -81,15 +82,25 @@ class SegTransform:
             if random.random() < 0.1:
                 img = TF.to_grayscale(img, num_output_channels=3)
 
-            # --- gaussian blur ---
-            if random.random() < 0.5:
-                img = TF.gaussian_blur(img, kernel_size=23,
-                                       sigma=random.uniform(0.1, 2.0))
+            # --- gaussian blur (완화: p=0.2, kernel=11) ---
+            if random.random() < 0.2:
+                img = TF.gaussian_blur(img, kernel_size=11,
+                                       sigma=random.uniform(0.1, 1.0))
         else:
-            img  = TF.resize(img,  [self.crop_size, self.crop_size],
+            # --- val: aspect ratio 유지, longer side = crop_size, pad ---
+            orig_h, orig_w = img.height, img.width
+            scale = self.crop_size / max(orig_h, orig_w)
+            new_h = int(orig_h * scale)
+            new_w = int(orig_w * scale)
+            img  = TF.resize(img,  [new_h, new_w],
                              interpolation=InterpolationMode.BILINEAR, antialias=True)
-            mask = TF.resize(mask, [self.crop_size, self.crop_size],
+            mask = TF.resize(mask, [new_h, new_w],
                              interpolation=InterpolationMode.NEAREST)
+            pw = self.crop_size - new_w
+            ph = self.crop_size - new_h
+            if pw > 0 or ph > 0:
+                img  = TF.pad(img,  [0, 0, pw, ph], fill=0)
+                mask = TF.pad(mask, [0, 0, pw, ph], fill=255)
 
         # --- to tensor ---
         img = TF.to_tensor(img)
@@ -118,40 +129,52 @@ class VOCSegDataset(Dataset):
         return img, mask
 
 
+def _ann_to_binary_mask(ann: dict, h: int, w: int) -> np.ndarray:
+    """Rasterize one COCO segmentation annotation."""
+    seg = ann.get("segmentation", [])
+    tmp = Image.new("L", (w, h), 0)
+
+    if isinstance(seg, list):
+        draw = ImageDraw.Draw(tmp)
+        for poly in seg:
+            if len(poly) >= 6:
+                pts = list(zip(poly[::2], poly[1::2]))
+                draw.polygon(pts, fill=1)
+        return np.array(tmp, dtype=bool)
+
+    if isinstance(seg, dict):
+        from pycocotools import mask as cm
+        rle = seg
+        if isinstance(rle.get("counts"), list):
+            rle = cm.frPyObjects(rle, h, w)
+        return cm.decode(rle).astype(bool)
+
+    return np.zeros((h, w), dtype=bool)
+
+
 def _coco_seg_mask(anns: list, h: int, w: int) -> Image.Image:
-    """Convert COCO annotations (for one image) to a VOC-style mask."""
+    """Convert COCO annotations to a VOC-style mask.
+
+    VOC classes are mapped to labels 1-20. Annotated non-VOC objects and crowd
+    regions are ignored instead of being taught as background.
+    """
     mask = np.zeros((h, w), dtype=np.uint8)
 
-    # Draw largest area first so smaller objects appear on top
+    # Draw largest area first so smaller objects appear on top.
     for ann in sorted(anns, key=lambda a: a.get("area", 0), reverse=True):
-        if ann.get("iscrowd", 0):
+        try:
+            ann_mask = _ann_to_binary_mask(ann, h, w)
+        except ImportError:
             continue
-        cat_id = ann["category_id"]
-        if cat_id not in COCO_TO_VOC:
-            continue
-        voc_cls = COCO_TO_VOC[cat_id]
 
-        seg = ann.get("segmentation", [])
-        if isinstance(seg, list):
-            tmp = Image.new("L", (w, h), 0)
-            draw = ImageDraw.Draw(tmp)
-            for poly in seg:
-                if len(poly) >= 6:
-                    pts = list(zip(poly[::2], poly[1::2]))
-                    draw.polygon(pts, fill=voc_cls)
-            tmp_arr = np.array(tmp)
-            mask[tmp_arr > 0] = tmp_arr[tmp_arr > 0]
-        elif isinstance(seg, dict):
-            # RLE (crowd annotations skipped above, but just in case)
-            try:
-                from pycocotools import mask as cm
-                rle = seg
-                if isinstance(rle.get("counts"), list):
-                    rle = cm.frPyObjects(rle, h, w)
-                m = cm.decode(rle)
-                mask[m > 0] = voc_cls
-            except ImportError:
-                pass
+        if not ann_mask.any():
+            continue
+
+        cat_id = ann["category_id"]
+        if ann.get("iscrowd", 0) or cat_id not in COCO_TO_VOC:
+            mask[ann_mask] = 255
+        else:
+            mask[ann_mask] = COCO_TO_VOC[cat_id]
 
     return Image.fromarray(mask)
 
@@ -159,6 +182,13 @@ def _coco_seg_mask(anns: list, h: int, w: int) -> Image.Image:
 class COCOSegDataset(Dataset):
     def __init__(self, img_dir: str, ann_file: str, transform=None):
         self.ds = CocoDetection(root=img_dir, annFile=ann_file)
+        self.ds.ids = [
+            img_id for img_id in self.ds.ids
+            if any(
+                ann.get("category_id") in COCO_TO_VOC and not ann.get("iscrowd", 0)
+                for ann in self.ds.coco.imgToAnns.get(img_id, [])
+            )
+        ]
         self.transform = transform
 
     def __len__(self):

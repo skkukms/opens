@@ -107,7 +107,8 @@ def parse_args():
     p.add_argument("--workers",       type=int, default=4)
     # model
     p.add_argument("--num-classes",   type=int, default=21)
-    p.add_argument("--aspp-ch",       type=int, default=128)
+    p.add_argument("--aspp-ch",       type=int, default=192)
+    p.add_argument("--low-proj-ch",   type=int, default=48)
     p.add_argument("--no-pretrained", action="store_true")
     # training
     p.add_argument("--epochs",        type=int, default=50)
@@ -157,7 +158,7 @@ def main():
 
     # ---- model ----
     model = SegModel(num_classes=args.num_classes, pretrained=not args.no_pretrained,
-                     aspp_ch=args.aspp_ch).to(device)
+                     aspp_ch=args.aspp_ch, low_proj_ch=args.low_proj_ch).to(device)
 
     # ---- optimizer (separate LR for backbone) ----
     optimizer = torch.optim.SGD(
